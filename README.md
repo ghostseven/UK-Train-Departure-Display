@@ -27,9 +27,10 @@ You will likely need to set up an alias so that when you type Python you get the
 >### Raspbian Lite
 >If you're using Raspbian Lite, you'll also need to install:
 >- `libopenjp2-7`
+>- `libtiff5`
 >with:
 >```bash
->$ sudo apt-get install libopenjp2-7
+>$ sudo apt-get install libopenjp2-7 libtiff5
 >```
 
 Clone this repo
@@ -135,3 +136,6 @@ Chris Hutchinson tweeted a video demo of the original software running on a real
 A big thanks to Chris Hutchinson who originally built this code! He can be found on GitHub at https://github.com/chrishutchinson/
 
 The fonts used were painstakingly put together by `DanielHartUK` and can be found on GitHub at https://github.com/DanielHartUK/Dot-Matrix-Typeface - A huge thanks for making that resource available!
+
+This has been backported from the Balena version (https://github.com/balenalabs/uk-train-departure-display) that forked from this repo, I wanted to remove the deployment side of it / docker etc.
+

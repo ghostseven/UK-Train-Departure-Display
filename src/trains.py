@@ -1,7 +1,15 @@
 import os
+import re
 import requests
 import json
-from datetime import date
+from datetime import datetime
+
+RTT_BASE_URL = "https://data.rtt.io"
+# pin the API version so future RTT changes don't silently break the display
+RTT_API_VERSION = "2026-07-25"
+
+# if config.json holds a refresh token, the short life access token issued for it is cached here
+cachedAccessToken = None
 
 def abbrStation(journeyConfig, inputStr):
     dict = journeyConfig['stationAbbr']
@@ -9,64 +17,130 @@ def abbrStation(journeyConfig, inputStr):
         inputStr = inputStr.replace(key, dict[key])
     return inputStr
 
-def loadDeparturesForStationRTT(journeyConfig, username, password):
+def cleanToken(token):
+    token = token.strip()
+    if token.lower().startswith('bearer '):
+        token = token[7:].strip()
+    return token
+
+def rttRequest(token, url):
+    headers = {'Authorization': f"Bearer {token}", 'Version': RTT_API_VERSION}
+    return requests.get(url, headers=headers)
+
+def requestAccessToken(refreshToken):
+    global cachedAccessToken
+    response = rttRequest(refreshToken, f"{RTT_BASE_URL}/api/get_access_token")
+    if response.status_code != 200:
+        return False
+    cachedAccessToken = response.json()['token']
+    return True
+
+def rttGet(token, url):
+    token = cleanToken(token)
+    response = rttRequest(cachedAccessToken or token, url)
+    # the token may be a refresh token or the cached access token may have expired,
+    # so swap the configured token for a new access token and try again
+    if response.status_code == 401 and requestAccessToken(token):
+        response = rttRequest(cachedAccessToken, url)
+    if response.status_code == 401:
+        raise ValueError(f"RTT API rejected the token in config.json (401): {response.text}")
+    if response.status_code == 429:
+        raise ValueError(f"RTT rate limit hit, retry after {response.headers.get('Retry-After')}s")
+    response.raise_for_status()
+    # 204 = valid query but no services, there is no body
+    if response.status_code == 204:
+        return None
+    return response.json()
+
+def formatTime(isoTime):
+    # times are now ISO 8601 datetimes rather than "HHMM", convert to local time for display
+    # parsed with strptime rather than fromisoformat so it still works on Python 3.6
+    match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$', isoTime)
+    if match is None:
+        return isoTime[11:16]
+    dateTime, offset = match.groups()
+    # no offset means the time is already local to the station
+    if offset is None:
+        return dateTime[11:16]
+    offset = '+0000' if offset == 'Z' else offset.replace(':', '')
+    return datetime.strptime(dateTime + offset, '%Y-%m-%dT%H:%M:%S%z').astimezone().strftime('%H:%M')
+
+def loadDeparturesForStationRTT(journeyConfig, token):
     if journeyConfig["departureStation"] == "":
         raise ValueError(
             "Please set the journey.departureStation property in config.json")
 
-    if username == "" or password == "":
+    if cleanToken(token) == "":
         raise ValueError(
             "Please complete the rttApi section of your config.json file")
 
     departureStation = journeyConfig["departureStation"]
 
-    response = requests.get(f"https://api.rtt.io/api/v1/json/search/{departureStation}", auth=(username, password))
-    data = response.json()
-    translated_departures = []
-    td = date.today()
+    url = f"{RTT_BASE_URL}/gb-nr/location?code={departureStation}"
+    if journeyConfig.get("destinationStation"):
+        url += f"&filterTo={journeyConfig['destinationStation']}"
 
-    if data['services'] is None:
+    data = rttGet(token, url)
+    translated_departures = []
+
+    if data is None or not data.get('services'):
         return translated_departures, departureStation
 
-    for item in data['services'][:5]:
-        uid = item['serviceUid']
-        destination_name = abbrStation(journeyConfig, item['locationDetail']['destination'][0]['description'])
+    for item in data['services']:
+        temporal = item.get('temporalData') or {}
+        departure = temporal.get('departure') or {}
+        metadata = item['scheduleMetadata']
 
-        dt = item['locationDetail']['gbttBookedDeparture']
-        try:
-            edt = item['locationDetail']['realtimeDeparture']
-        except:
-            edt = item['locationDetail']['gbttBookedDeparture']
+        # skip passing trains, trains terminating here and non-passenger moves
+        if temporal.get('displayAs') in (None, 'PASS') or 'scheduleAdvertised' not in departure:
+            continue
+        if not metadata.get('inPassengerService', True):
+            continue
 
-        aimed_departure_time = dt[:2] + ':' + dt[2:]
-        expected_departure_time = edt[:2] + ':' + edt[2:]
-        status = item['locationDetail']['displayAs']
-        mode = item['serviceType']
-        try:
-            platform = item['locationDetail']['platform']
-        except:
-            platform = ""
+        uid = metadata['identity']
+        destination_name = item['destination'][0]['location']['description']
 
-        translated_departures.append({'uid': uid, 'destination_name': abbrStation(journeyConfig, destination_name), 'aimed_departure_time': aimed_departure_time, 
-                                        'expected_departure_time': expected_departure_time,
+        dt = departure['scheduleAdvertised']
+        edt = departure.get('realtimeActual') or departure.get('realtimeForecast') or departure.get('realtimeEstimate') or dt
+
+        status = temporal['displayAs']
+        if departure.get('isCancelled'):
+            status = 'CANCELLED'
+
+        mode = 'bus' if 'BUS' in metadata.get('modeType', 'TRAIN') else 'train'
+
+        platformData = (item.get('locationMetadata') or {}).get('platform') or {}
+        platform = platformData.get('actual') or platformData.get('planned') or ""
+
+        translated_departures.append({'uid': uid, 'destination_name': abbrStation(journeyConfig, destination_name), 'aimed_departure_time': formatTime(dt),
+                                        'expected_departure_time': formatTime(edt),
                                         'status': status, 'mode': mode, 'platform': platform,
-                                        'time_table_url': f"https://api.rtt.io/api/v1/json/service/{uid}/{td.year}/{td.month:02}/{td.day:02}"})
+                                        'time_table_url': f"{RTT_BASE_URL}/gb-nr/service?identity={uid}&departureDate={metadata['departureDate']}"})
+
+        if len(translated_departures) == 5:
+            break
 
     return translated_departures, departureStation
 
-def loadDestinationsForDepartureRTT(journeyConfig, username, password, timetableUrl):
-    r = requests.get(url=timetableUrl, auth=(username, password))
-    calling_data = r.json()
+def loadDestinationsForDepartureRTT(journeyConfig, token, timetableUrl):
+    calling_data = rttGet(token, timetableUrl)
+    locations = calling_data['service']['locations']
 
     index = 0
-    for loc in calling_data['locations']:
-        if loc['crs'] == journeyConfig["departureStation"]:
+    for loc in locations:
+        if journeyConfig["departureStation"] in loc['location'].get('shortCodes', []):
             break
         index += 1
 
-    calling_at = []    
-    for loc in calling_data['locations'][index+1:]:
-        calling_at.append(abbrStation(journeyConfig, loc['description']))
+    calling_at = []
+    for loc in locations[index+1:]:
+        # the service now lists every timing point, only show public stops
+        if loc['temporalData'].get('displayAs') not in ('CALL', 'TERMINATES'):
+            continue
+        callType = loc['temporalData'].get('realtimeCallType') or loc['temporalData'].get('scheduledCallType') or ''
+        if not callType.startswith('ADVERTISED'):
+            continue
+        calling_at.append(abbrStation(journeyConfig, loc['location']['description']))
 
     if len(calling_at) == 1:
         calling_at[0] = calling_at[0] + ' only.'

@@ -146,13 +146,13 @@ def loadDataRTT(apiConfig, journeyConfig):
         return False, False, journeyConfig['outOfHoursName']
 
     departures, stationName = loadDeparturesForStationRTT(
-        journeyConfig, apiConfig["username"], apiConfig["password"])
+        journeyConfig, apiConfig["token"])
 
     if len(departures) == 0:
         return False, False, journeyConfig['outOfHoursName']
 
     firstDepartureDestinations = loadDestinationsForDepartureRTT(
-        journeyConfig, apiConfig["username"], apiConfig["password"], departures[0]["time_table_url"])    
+        journeyConfig, apiConfig["token"], departures[0]["time_table_url"])    
 
     #return False, False, journeyConfig['outOfHoursName']
     return departures, firstDepartureDestinations, stationName

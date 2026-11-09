@@ -43,7 +43,9 @@ $ pip3 install -r requirements.txt
 
 ## Configuration 
 
-Sign up for the [Real Time Trains API](https://api.rtt.io), and get your username and password.
+Sign up for the [Real Time Trains API](https://api-portal.rtt.io) (requires a RTT unified login account), and get your API access token.
+
+>The original api.rtt.io API (username / password) has been shut down, if you are upgrading from an older version replace `username` and `password` in your `config.json` with `token`.
 
 You can still use the old transportAPI (fill in the details and change apiMethod to 'transport') as an alternative but you will either need to have a commercial agreement as the limits on API calls are now so small it is not pratical to use in a real time way. 
 
@@ -65,8 +67,7 @@ Copy `config.sample.json` to `config.json` and complete.
       "operatingHours": "0-23"
     },
     "rttApi":{
-        "username": "",
-        "password": "",
+        "token": "",
         "operatingHours": "6-23"
       },
       "apiMethod": "rtt"    
@@ -86,11 +87,9 @@ Copy `config.sample.json` to `config.json` and complete.
 
 ### Real Time Trains API Settings (Default)
 
-`username` - your real time trains username
+`token` - your real time trains API access token, keep this private and never commit your `config.json`
 
-`password` - your real time trains password
-
-`operating hours` - the range of hours you wish the display to actively request train times, be aware the free tier API has a limit of 1000 calls a day.
+`operating hours` - the range of hours you wish the display to actively request train times, check the rate limits for your token on the API portal.
 
 ### Transport API Settings (DONT USE)
 
